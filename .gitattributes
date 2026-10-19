@@ -1,0 +1,4 @@
+*.bin binary
+*.bmp binary
+*.npy binary
+*.jpg binary

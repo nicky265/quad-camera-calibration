@@ -1,0 +1,29 @@
+%YAML:1.0
+---
+model: fisheye
+K: !!opencv-matrix
+   rows: 3
+   cols: 3
+   dt: d
+   data: [ 453.20556530463756, 0., 746.83057757470544, 0.,
+       452.98416111162709, 549.60355883763714, 0., 0., 1. ]
+D: !!opencv-matrix
+   rows: 1
+   cols: 4
+   dt: d
+   data: [ -0.049786529430273278, -0.00012968313396415291,
+       -0.0067190722344591322, 0.0016860683033998903 ]
+image_width: 1440
+image_height: 1080
+pattern_cols: 8
+pattern_rows: 11
+square_mm: 100.
+circle_center: !!opencv-matrix
+   rows: 1
+   cols: 2
+   dt: d
+   data: [ 748., 550. ]
+circle_radius: 602.
+fold_radius: 4.0402650188848392
+rms: 0.35997375371948404
+mean_error: 0.32536547631025314

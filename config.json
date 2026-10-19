@@ -1,0 +1,18 @@
+{
+  "cameras": {
+    "count": 4
+  },
+  "pano": {
+    "out_size": [2048, 512],
+    "fov_h_deg": 360.0,
+    "focus_distance_m": 4.5,
+    "ground_height_m": 0.5,
+    "far_distance_m": 0.0,
+    "max_ground_m": 30.0
+  },
+  "paths": {
+    "calib_root": "data/calib",
+    "frames_root": "data/frames",
+    "out_root": "output"
+  }
+}

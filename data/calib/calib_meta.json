@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "created": "2026-10-12T23:25:28",
+  "count": 4,
+  "out_size": [
+    2048,
+    512
+  ],
+  "fov_h_deg": 360.0,
+  "lut_dtype": "float32",
+  "board": {
+    "inner_cols": 8,
+    "inner_rows": 11,
+    "square_mm": 100.0
+  },
+  "cameras": [
+    {
+      "index": 0,
+      "intrinsics_rms": 1.1059679302176653,
+      "has_lut": true,
+      "has_weight": true
+    },
+    {
+      "index": 1,
+      "intrinsics_rms": 0.7443855252712128,
+      "has_lut": true,
+      "has_weight": true
+    },
+    {
+      "index": 2,
+      "intrinsics_rms": 0.5335203306790387,
+      "has_lut": true,
+      "has_weight": true
+    },
+    {
+      "index": 3,
+      "intrinsics_rms": 0.5564986204836442,
+      "has_lut": true,
+      "has_weight": true
+    }
+  ]
+}
