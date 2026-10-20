@@ -21,13 +21,13 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
-#include "config.hpp"
-#include "calib_io.hpp"
-#include "npy_io.hpp"
-#include "parallax.hpp"
-#include "blend.hpp"
-#include "parallel.hpp"
-#include "paths.hpp"
+#include <panostitch/config.hpp>
+#include <panostitch/calib_io.hpp>
+#include <panostitch/npy_io.hpp>
+#include <panostitch/parallax.hpp>
+#include <panostitch/blend.hpp>
+#include <panostitch/parallel.hpp>
+#include <panostitch/paths.hpp>
 
 using namespace pan;
 namespace fs = std::filesystem;

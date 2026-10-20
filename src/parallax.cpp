@@ -1,5 +1,5 @@
 // parallax.cpp —— 世界方向 & 视差补偿投影实现
-#include "parallax.hpp"
+#include <panostitch/parallax.hpp>
 
 #include <cmath>
 #include <limits>

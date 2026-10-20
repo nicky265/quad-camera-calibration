@@ -1,5 +1,5 @@
 // config.cpp —— config.json 读取实现
-#include "config.hpp"
+#include <panostitch/config.hpp>
 
 #include <fstream>
 #include <iostream>

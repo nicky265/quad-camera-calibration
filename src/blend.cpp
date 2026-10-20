@@ -1,11 +1,11 @@
 // blend.cpp —— 融合实现
-#include "blend.hpp"
+#include <panostitch/blend.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <opencv2/imgproc.hpp>
-#include "parallel.hpp"
+#include <panostitch/parallel.hpp>
 
 namespace pan {
 

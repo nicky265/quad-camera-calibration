@@ -1,5 +1,5 @@
 // npy_io.cpp —— .npy 解析实现（参考 numpy 格式规范 v1.0/v2.0）
-#include "npy_io.hpp"
+#include <panostitch/npy_io.hpp>
 
 #include <cstdint>
 #include <cstring>
