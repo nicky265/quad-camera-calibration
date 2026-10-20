@@ -1,5 +1,5 @@
 // calib_io.cpp —— lut.bin / weight.bin / yml 读取实现
-#include "calib_io.hpp"
+#include <panostitch/calib_io.hpp>
 
 #include <cstdint>
 #include <cstring>

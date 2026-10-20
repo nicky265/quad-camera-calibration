@@ -1,4 +1,4 @@
-#include "paths.hpp"
+#include <panostitch/paths.hpp>
 
 #ifdef _WIN32
 #include <windows.h>

@@ -12,7 +12,7 @@
 
 #include <vector>
 #include <opencv2/core.hpp>
-#include "calib_io.hpp"
+#include <panostitch/calib_io.hpp>
 
 namespace pan {
 

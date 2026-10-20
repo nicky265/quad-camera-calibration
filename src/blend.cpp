@@ -1,11 +1,11 @@
 // blend.cpp —— 融合实现
-#include "blend.hpp"
+#include <panostitch/blend.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <opencv2/imgproc.hpp>
-#include "parallel.hpp"
+#include <panostitch/parallel.hpp>
 
 namespace pan {
 
@@ -17,16 +17,6 @@ double wrapAngleDeg(double a) {
     double r = std::fmod(a + 180.0, 360.0);
     if (r < 0) r += 360.0;
     return r - 180.0;
-}
-
-cv::Mat gaussianPyramid(std::vector<cv::Mat>& pyr, int levels) {
-    // pyr[0] 已是原图；返回后 pyr 为金字塔
-    for (int i = 1; i < levels; ++i) {
-        cv::Mat down;
-        cv::pyrDown(pyr[i - 1], down);
-        pyr.push_back(down);
-    }
-    return pyr.back();
 }
 
 std::vector<cv::Mat> laplacianPyramid(const cv::Mat& img, int levels) {

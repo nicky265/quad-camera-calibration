@@ -1,0 +1,11 @@
+# 统一的警告选项；只作用于本仓库源码
+function(panostitch_enable_warnings target)
+  if(NOT PANOSTITCH_ENABLE_WARNINGS)
+    return()
+  endif()
+  if(MSVC)
+    target_compile_options(${target} PRIVATE /W4 /permissive-)
+  else()
+    target_compile_options(${target} PRIVATE -Wall -Wextra)
+  endif()
+endfunction()
