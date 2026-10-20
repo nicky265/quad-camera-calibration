@@ -5,8 +5,7 @@
 #   cmake --build build
 #   ctest --test-dir build --output-on-failure
 #
-# 依赖：OpenCV 4（core/imgproc/imgcodecs）
-#       nlohmann/json（默认使用 third_party 内置单头文件）
+# 依赖：OpenCV 4（core/imgproc/imgcodecs，JSON 配置也由 OpenCV 解析）
 
 cmake_minimum_required(VERSION 3.16)
 
@@ -20,8 +19,6 @@ option(PANOSTITCH_ENABLE_WARNINGS
   "Enable additional compiler warnings" ON)
 option(PANOSTITCH_STATIC_RUNTIME
   "Statically link the GCC runtime when building with MinGW" ON)
-option(PANOSTITCH_USE_SYSTEM_JSON
-  "Use a system nlohmann_json package instead of the bundled header" OFF)
 
 include(GNUInstallDirs)
 
@@ -40,10 +37,6 @@ include(CompilerWarnings)
 
 # ---- 依赖 ---------------------------------------------------------------
 find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc imgcodecs)
-
-if(PANOSTITCH_USE_SYSTEM_JSON)
-  find_package(nlohmann_json 3.11 REQUIRED)
-endif()
 
 # ---- 目标 ---------------------------------------------------------------
 add_subdirectory(src)

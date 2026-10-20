@@ -21,13 +21,6 @@ target_include_directories(panostitch_core
 target_link_libraries(panostitch_core PUBLIC ${OpenCV_LIBS})
 target_include_directories(panostitch_core PUBLIC ${OpenCV_INCLUDE_DIRS})
 
-# nlohmann/json 只在 config.cpp 内部使用
-if(PANOSTITCH_USE_SYSTEM_JSON)
-  target_link_libraries(panostitch_core PRIVATE nlohmann_json::nlohmann_json)
-else()
-  target_include_directories(panostitch_core PRIVATE "${PROJECT_SOURCE_DIR}/third_party")
-endif()
-
 panostitch_enable_warnings(panostitch_core)
 
 # ---- 命令行程序 ---------------------------------------------------------

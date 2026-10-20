@@ -1,4 +1,4 @@
-// config.hpp —— 读取 config.json（用 nlohmann/json 单头文件）
+// config.hpp —— 读取 config.json（OpenCV FileStorage，无第三方 JSON 依赖）
 //
 // 对应 Python: common/config.py 里本项目用到的字段。
 // 只保留 C++ 单张合成器需要的部分：相机数、柱面输出尺寸/FOV、视差默认参数。
