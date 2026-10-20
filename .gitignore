@@ -1,6 +1,13 @@
 # 构建产物
 build/
 
+# CMake 本地文件
+CMakeUserPresets.json
+compile_commands.json
+
+# 本地编辑器
+.vscode/
+
 # 运行输出
 output/*
 !output/.gitkeep

@@ -19,16 +19,6 @@ double wrapAngleDeg(double a) {
     return r - 180.0;
 }
 
-cv::Mat gaussianPyramid(std::vector<cv::Mat>& pyr, int levels) {
-    // pyr[0] 已是原图；返回后 pyr 为金字塔
-    for (int i = 1; i < levels; ++i) {
-        cv::Mat down;
-        cv::pyrDown(pyr[i - 1], down);
-        pyr.push_back(down);
-    }
-    return pyr.back();
-}
-
 std::vector<cv::Mat> laplacianPyramid(const cv::Mat& img, int levels) {
     std::vector<cv::Mat> g;
     g.push_back(img.clone());
