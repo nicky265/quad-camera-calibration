@@ -6,35 +6,49 @@
 
 #include <algorithm>
 #include <atomic>
+#include <exception>
+#include <mutex>
 #include <thread>
 #include <vector>
 
 namespace pan {
 
 // 对 i∈[0,n) 执行 f(i)；threads<=1 时串行。
-template <class F>
-void parallel_for(int n, int threads, F&& f) {
+// 工作线程中的异常会在所有线程 join 后重新抛出，避免 std::terminate。
+template <class F> void parallel_for(int n, int threads, F&& f) {
+    if (n <= 0) return;
     if (threads <= 1 || n <= 1) {
-        for (int i = 0; i < n; ++i) f(i);
+        for (int i = 0; i < n; ++i)
+            f(i);
         return;
     }
-    const int T = std::min(threads, n);
-    std::atomic<int> next{0};
-    std::vector<std::thread> pool;
-    pool.reserve(T);
-    for (int t = 0; t < T; ++t) {
-        pool.emplace_back([&]() {
-            int i;
-            while ((i = next.fetch_add(1)) < n) f(i);
-        });
-    }
-    for (auto& th : pool) th.join();
-}
 
-// 把 [0,n) 切成 T 段，返回第 t 段的 [begin,end)
-inline void block_range(int n, int t, int T, int& begin, int& end) {
-    begin = (int)((long long)n * t / T);
-    end = (int)((long long)n * (t + 1) / T);
+    const int worker_count = std::min(threads, n);
+    std::atomic<int> next{0};
+    std::exception_ptr error;
+    std::mutex error_mutex;
+
+    auto worker = [&]() {
+        try {
+            for (;;) {
+                const int i = next.fetch_add(1);
+                if (i >= n) break;
+                f(i);
+            }
+        } catch (...) {
+            std::lock_guard<std::mutex> lock(error_mutex);
+            if (!error) error = std::current_exception();
+        }
+    };
+
+    std::vector<std::thread> pool;
+    pool.reserve(worker_count);
+    for (int t = 0; t < worker_count; ++t)
+        pool.emplace_back(worker);
+    for (auto& thread : pool)
+        thread.join();
+
+    if (error) std::rethrow_exception(error);
 }
 
 } // namespace pan

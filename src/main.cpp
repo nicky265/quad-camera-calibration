@@ -4,15 +4,19 @@
 // 支持 --parallax lut（读已烘焙 LUT）或 inmem（内存构造，含焦点/地面视差补偿）。
 //
 // 用法：
-//   panostitch --frames data/preview --blend multiband --seam
-//   panostitch --frames data/preview --parallax inmem --ground-height 0.5 --blend multiband --seam
+//   panostitch --frames data/frames --blend multiband --seam
+//   panostitch --frames data/frames --parallax inmem --ground-height 0.5 --blend multiband --seam
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
+#include <climits>
 #include <cmath>
 #include <cstdio>
-#include <cstring>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -21,11 +25,11 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
-#include <panostitch/config.hpp>
+#include <panostitch/blend.hpp>
 #include <panostitch/calib_io.hpp>
+#include <panostitch/config.hpp>
 #include <panostitch/npy_io.hpp>
 #include <panostitch/parallax.hpp>
-#include <panostitch/blend.hpp>
 #include <panostitch/parallel.hpp>
 #include <panostitch/paths.hpp>
 
@@ -33,233 +37,430 @@ using namespace pan;
 namespace fs = std::filesystem;
 using Clock = std::chrono::steady_clock;
 
-static double ms(Clock::time_point a, Clock::time_point b) {
-    return std::chrono::duration<double, std::milli>(b - a).count();
-}
+namespace {
 
-// 按命名约定查找第 i 路相机的一帧图像（0.* / cam0.* / cam_0.* / 00.*）
-static std::string findFrame(const std::string& dir, int i) {
-    std::vector<std::string> pats;
-    pats.push_back(std::to_string(i) + ".*");
-    pats.push_back("cam" + std::to_string(i) + ".*");
-    pats.push_back("cam_" + std::to_string(i) + ".*");
-    char buf[16]; std::snprintf(buf, sizeof(buf), "%02d.*", i); pats.push_back(buf);
-    for (const auto& p : pats) {
-        std::vector<cv::String> hits;
-        cv::glob(dir + "/" + p, hits, false);
-        if (!hits.empty()) { std::sort(hits.begin(), hits.end()); return hits[0]; }
-    }
-    return "";
-}
+struct Options {
+    std::string frames_dir;
+    std::string out_path;
+    std::string config_path;
+    std::string blend = "multiband";
+    std::string parallax = "lut";
+    bool seam = false;
+    bool help = false;
+    int levels = 5;
+    int threads = 1;
+    int dump_warp = -1;
+    std::string dump_warp_path;
+    std::string dump_pano_path;
+    double focus_m = -1.0;
+    double ground_m = -1.0;
+    double far_m = -1.0;
+    double max_ground_m = -1.0;
+};
 
 struct Cam {
     cv::Mat mapx, mapy;      // CV_32F
     cv::Mat weight;          // CV_32F (H,W)
-    cv::Mat gain;            // CV_32F (3,1) 或空
-    cv::Mat vignette;        // 可选
-    double  center_angle = 0;// 度
+    cv::Mat gain;            // CV_32F (3,1)，可为空
+    double center_angle = 0; // 度
     Intrinsics intr;
     Extrinsics extr;
 };
 
-int main(int argc, char** argv) {
-    // ---- 参数 ----
-    std::string frames_dir, out_path, config_path;
-    std::string blend = "multiband";
-    std::string parallax = "lut";
-    bool seam = false;
-    int levels = 5;
-    double focus_m = -1, ground_m = -1, far_m = -1, max_ground_m = -1;
-    int threads = 1;
-    int dump_warp = -1; std::string dump_path; std::string dump_pano;
+double msSince(Clock::time_point start) {
+    return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+}
 
+void printUsage(const char* prog) {
+    std::cout << "Usage: " << prog << " [options]\n"
+              << "  --frames DIR            source frame directory (default: paths.frames_root)\n"
+              << "  --out PATH              output image (default: <out_root>/cpp_pano.jpg)\n"
+              << "  --config PATH           config.json path (default: auto-detect)\n"
+              << "  --blend {feather,multiband}  blend mode (default: multiband)\n"
+              << "  --seam                  enable seam finding before blending\n"
+              << "  --levels N              multiband pyramid levels (default: 5)\n"
+              << "  --parallax {lut,inmem}  mapping source (default: lut)\n"
+              << "  --ground-height H       inmem ground compensation height (m)\n"
+              << "  --focus-distance D      inmem single-distance compensation (m)\n"
+              << "  --far-distance F        inmem ground far distance (m, 0=pure rotation)\n"
+              << "  --max-ground-distance M inmem ground max distance (m, default: 30)\n"
+              << "  --threads N             worker threads (0=hardware, default: 1)\n"
+              << "  --dump-warp I PATH      debug: dump warped camera I as float32\n"
+              << "  --dump-pano PATH        debug: dump blended panorama as float32\n"
+              << "  -h, --help              show this help\n";
+}
+
+bool takeString(int argc, char** argv, int& i, const char* name, std::string& out) {
+    if (i + 1 >= argc) {
+        std::cerr << "[args] missing value for " << name << "\n";
+        return false;
+    }
+    out = argv[++i];
+    return true;
+}
+
+bool parseInt(const std::string& text, int& out) {
+    if (text.empty()) return false;
+    char* end = nullptr;
+    errno = 0;
+    const long value = std::strtol(text.c_str(), &end, 10);
+    if (errno == ERANGE || end == text.c_str() || *end != '\0' || value < INT_MIN ||
+        value > INT_MAX) {
+        return false;
+    }
+    out = static_cast<int>(value);
+    return true;
+}
+
+bool parseDouble(const std::string& text, double& out) {
+    if (text.empty()) return false;
+    char* end = nullptr;
+    errno = 0;
+    const double value = std::strtod(text.c_str(), &end);
+    if (errno == ERANGE || end == text.c_str() || *end != '\0' || !std::isfinite(value)) {
+        return false;
+    }
+    out = value;
+    return true;
+}
+
+bool takeInt(int argc, char** argv, int& i, const char* name, int& out) {
+    std::string text;
+    if (!takeString(argc, argv, i, name, text)) return false;
+    if (!parseInt(text, out)) {
+        std::cerr << "[args] invalid " << name << ": " << text << "\n";
+        return false;
+    }
+    return true;
+}
+
+bool takeDouble(int argc, char** argv, int& i, const char* name, double& out) {
+    std::string text;
+    if (!takeString(argc, argv, i, name, text)) return false;
+    if (!parseDouble(text, out)) {
+        std::cerr << "[args] invalid " << name << ": " << text << "\n";
+        return false;
+    }
+    return true;
+}
+
+bool parseArgs(int argc, char** argv, Options& opt) {
     for (int i = 1; i < argc; ++i) {
-        std::string a = argv[i];
-        auto next = [&](double def) -> double { return (i + 1 < argc) ? std::atof(argv[++i]) : def; };
-        if (a == "--frames") frames_dir = argv[++i];
-        else if (a == "--out") out_path = argv[++i];
-        else if (a == "--config") config_path = argv[++i];
-        else if (a == "--blend") blend = argv[++i];
-        else if (a == "--parallax") parallax = argv[++i];
-        else if (a == "--seam") seam = true;
-        else if (a == "--levels") levels = std::atoi(argv[++i]);
-        else if (a == "--threads") threads = std::atoi(argv[++i]);
-        else if (a == "--focus-distance") focus_m = next(-1);
-        else if (a == "--ground-height") ground_m = next(-1);
-        else if (a == "--far-distance") far_m = next(-1);
-        else if (a == "--max-ground-distance") max_ground_m = next(-1);
-        else if (a == "--dump-warp") { dump_warp = std::atoi(argv[++i]); dump_path = argv[++i]; }
-        else if (a == "--dump-pano") { dump_pano = argv[++i]; }
-        else { std::cerr << "Unknown argument: " << a << "\n"; return 2; }
+        const std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            opt.help = true;
+            return true;
+        }
+        if (arg == "--seam") {
+            opt.seam = true;
+        } else if (arg == "--frames") {
+            if (!takeString(argc, argv, i, "--frames", opt.frames_dir)) return false;
+        } else if (arg == "--out") {
+            if (!takeString(argc, argv, i, "--out", opt.out_path)) return false;
+        } else if (arg == "--config") {
+            if (!takeString(argc, argv, i, "--config", opt.config_path)) return false;
+        } else if (arg == "--blend") {
+            if (!takeString(argc, argv, i, "--blend", opt.blend)) return false;
+        } else if (arg == "--parallax") {
+            if (!takeString(argc, argv, i, "--parallax", opt.parallax)) return false;
+        } else if (arg == "--levels") {
+            if (!takeInt(argc, argv, i, "--levels", opt.levels)) return false;
+        } else if (arg == "--threads") {
+            if (!takeInt(argc, argv, i, "--threads", opt.threads)) return false;
+        } else if (arg == "--focus-distance") {
+            if (!takeDouble(argc, argv, i, "--focus-distance", opt.focus_m)) return false;
+        } else if (arg == "--ground-height") {
+            if (!takeDouble(argc, argv, i, "--ground-height", opt.ground_m)) return false;
+        } else if (arg == "--far-distance") {
+            if (!takeDouble(argc, argv, i, "--far-distance", opt.far_m)) return false;
+        } else if (arg == "--max-ground-distance") {
+            if (!takeDouble(argc, argv, i, "--max-ground-distance", opt.max_ground_m)) return false;
+        } else if (arg == "--dump-warp") {
+            if (!takeInt(argc, argv, i, "--dump-warp", opt.dump_warp)) return false;
+            if (!takeString(argc, argv, i, "--dump-warp", opt.dump_warp_path)) return false;
+            if (opt.dump_warp < 0) {
+                std::cerr << "[args] --dump-warp index must be >= 0\n";
+                return false;
+            }
+        } else if (arg == "--dump-pano") {
+            if (!takeString(argc, argv, i, "--dump-pano", opt.dump_pano_path)) return false;
+        } else {
+            std::cerr << "[args] unknown argument: " << arg << "\n";
+            printUsage(argv[0]);
+            return false;
+        }
+    }
+
+    if (opt.blend != "feather" && opt.blend != "multiband") {
+        std::cerr << "[args] --blend must be feather or multiband\n";
+        return false;
+    }
+    if (opt.parallax != "lut" && opt.parallax != "inmem") {
+        std::cerr << "[args] --parallax must be lut or inmem\n";
+        return false;
+    }
+    if (opt.levels < 1) {
+        std::cerr << "[args] --levels must be >= 1\n";
+        return false;
+    }
+    return true;
+}
+
+// 按命名约定查找第 i 路相机的一帧图像（0.* / cam0.* / cam_0.* / 00.*）
+std::string findFrame(const std::string& dir, int i) {
+    const std::vector<std::string> patterns = {
+        std::to_string(i) + ".*",
+        "cam" + std::to_string(i) + ".*",
+        "cam_" + std::to_string(i) + ".*",
+        cv::format("%02d.*", i),
+    };
+    for (const auto& pattern : patterns) {
+        std::vector<cv::String> hits;
+        cv::glob(dir + "/" + pattern, hits, false);
+        if (!hits.empty()) {
+            std::sort(hits.begin(), hits.end());
+            return hits[0];
+        }
+    }
+    return {};
+}
+
+void dumpFloatMat(const cv::Mat& mat, const std::string& path) {
+    std::ofstream ofs(path, std::ios::binary);
+    if (!ofs) throw std::runtime_error("cannot open dump file: " + path);
+    const cv::Mat cont = mat.isContinuous() ? mat : mat.clone();
+    ofs.write(reinterpret_cast<const char*>(cont.data),
+              static_cast<std::streamsize>(cont.total() * cont.channels() * sizeof(float)));
+    if (!ofs) throw std::runtime_error("failed to write dump file: " + path);
+}
+
+int run(int argc, char** argv) {
+    Options opt;
+    if (!parseArgs(argc, argv, opt)) return 2;
+    if (opt.help) {
+        printUsage(argv[0]);
+        return 0;
     }
 
     // 多线程版本：--threads N（0=取硬件线程数）；默认 1（单线程，与 Python 一致）
-    if (threads == 0) threads = static_cast<int>(std::thread::hardware_concurrency());
-    if (threads < 1) threads = 1;
-    cv::setNumThreads(1);   // OpenCV 内部仍单线程，并行度由本程序自己控制（保证可复现）
+    if (opt.threads == 0) {
+        const unsigned hw = std::thread::hardware_concurrency();
+        opt.threads = (hw > 0) ? static_cast<int>(hw) : 1;
+    }
+    if (opt.threads < 1) opt.threads = 1;
+    cv::setNumThreads(1); // OpenCV 内部仍单线程，并行度由本程序自己控制（保证可复现）
 
     const fs::path app_root = findAppRoot();
-    if (config_path.empty()) config_path = (app_root / "config.json").string();
-    const fs::path config_abs = fs::absolute(fs::path(config_path));
+    if (opt.config_path.empty()) opt.config_path = (app_root / "config.json").string();
+    const fs::path config_abs = fs::absolute(fs::path(opt.config_path));
     const fs::path config_dir = config_abs.parent_path();
 
-    Config cfg = loadConfig(config_abs.string());
+    const Config cfg = loadConfig(config_abs.string());
     const std::string calib_root = resolvePath(config_dir, fs::path(cfg.calib_root)).string();
     const std::string frames_root = resolvePath(config_dir, fs::path(cfg.frames_root)).string();
     const std::string out_root = resolvePath(config_dir, fs::path(cfg.out_root)).string();
 
     const int n = cfg.count;
-    const double fov = cfg.fov_h_deg;
     const int W = cfg.out_w, H = cfg.out_h;
-    if (frames_dir.empty()) frames_dir = frames_root;
-    if (out_path.empty()) out_path = (fs::path(out_root) / "cpp_pano.jpg").string();
+    const double fov = cfg.fov_h_deg;
+    if (n <= 0) throw std::runtime_error("[config] cameras.count must be > 0");
+    if (W <= 0 || H <= 0) throw std::runtime_error("[config] pano.out_size must be positive");
+    if (opt.dump_warp >= n) throw std::runtime_error("--dump-warp index out of range");
+    if (!(fov > 0.0) || fov > 360.0)
+        throw std::runtime_error("[config] pano.fov_h_deg must be in (0, 360]");
+
+    // 金字塔层数不能超过图像尺寸允许的上限，否则 pyrDown 会退化到 1x1 以下。
+    const int max_levels =
+        static_cast<int>(std::floor(std::log2(static_cast<double>(std::min(W, H))))) + 1;
+    if (opt.levels > max_levels) {
+        std::cerr << "[warn] --levels " << opt.levels << " clamped to " << max_levels << "\n";
+        opt.levels = max_levels;
+    }
+
+    const std::string frames_dir = opt.frames_dir.empty() ? frames_root : opt.frames_dir;
+    const std::string out_path =
+        opt.out_path.empty() ? (fs::path(out_root) / "cpp_pano.jpg").string() : opt.out_path;
 
     // ---- 读产物 ----
-    auto t_read0 = Clock::now();
+    const auto t_read0 = Clock::now();
     std::vector<Cam> cams(n);
     for (int i = 0; i < n; ++i) {
-        std::string cd = calib_root + "/camera_" + std::to_string(i);
+        const fs::path cd = fs::path(calib_root) / ("camera_" + std::to_string(i));
         Cam& c = cams[i];
-        c.weight = loadWeight(cd + "/weight.bin");
-        try { c.gain = loadNpy(cd + "/gain.npy"); } catch (...) { c.gain = cv::Mat(); }
-        c.extr = loadExtrinsicsYml(cd + "/extrinsics.yml");
-        // 中心方位角：光轴 (0,0,1) 转到世界系后取 atan2(x,z)
-        cv::Mat axis = c.extr.Rcw * (cv::Mat_<double>(3, 1) << 0, 0, 1);
-        c.center_angle = std::atan2(axis.at<double>(0), axis.at<double>(2)) * 180.0 / CV_PI;
+        c.weight = loadWeight((cd / "weight.bin").string());
+        try {
+            c.gain = loadNpy((cd / "gain.npy").string());
+        } catch (const std::exception& e) {
+            c.gain = cv::Mat();
+            std::cerr << "[warn] " << e.what() << "\n";
+        }
+        if (!c.gain.empty() && c.gain.total() != 3) {
+            std::cerr << "[warn] gain.npy for camera " << i << " is not 3 floats, ignored\n";
+            c.gain = cv::Mat();
+        }
+        c.extr = loadExtrinsicsYml((cd / "extrinsics.yml").string());
+        // 优先用标定文件记录的中心方位角；旧文件没有该字段时由 Rcw 反算。
+        if (c.extr.has_angle) {
+            c.center_angle = c.extr.center_angle_deg;
+        } else {
+            const cv::Mat axis = c.extr.Rcw * (cv::Mat_<double>(3, 1) << 0.0, 0.0, 1.0);
+            c.center_angle = std::atan2(axis.at<double>(0), axis.at<double>(2)) * 180.0 / CV_PI;
+        }
     }
-    auto t_read1 = Clock::now();
-    double t_read = ms(t_read0, t_read1);
+    const double t_read = msSince(t_read0);
 
     // ---- 读源帧 ----
-    auto tf0 = Clock::now();
+    const auto tf0 = Clock::now();
     std::vector<cv::Mat> frames(n);
     for (int i = 0; i < n; ++i) {
-        std::string p = findFrame(frames_dir, i);
-        if (p.empty()) {
-            std::cerr << "[error] no frame for camera " << i << " in " << frames_dir << "\n";
-            return 1;
+        const std::string path = findFrame(frames_dir, i);
+        if (path.empty()) {
+            throw std::runtime_error("no frame for camera " + std::to_string(i) + " in " +
+                                     frames_dir);
         }
-        frames[i] = cv::imread(p, cv::IMREAD_COLOR);
-        std::cout << "source image[" << i << "]: " << p << "\n";
+        frames[i] = cv::imread(path, cv::IMREAD_COLOR);
+        if (frames[i].empty()) throw std::runtime_error("cannot read frame: " + path);
+        std::cout << "source image[" << i << "]: " << path << "\n";
     }
-    double t_frames = ms(tf0, Clock::now());
+    const double t_frames = msSince(tf0);
 
     // ---- 视差映射 ----
-    double t_map = 0;
+    double t_map = 0.0;
     std::string mode = "LUT (baked / pure rotation)";
-    if (parallax == "inmem") {
+    if (opt.parallax == "inmem") {
         // 命令行给了 H 或 D 就以命令行为准；都没给才读 config（地面优先，与 Python 一致）
         double gm, fm;
-        if (ground_m < 0 && focus_m < 0) { gm = cfg.ground_height_m; fm = cfg.focus_distance_m; }
-        else { gm = (ground_m >= 0) ? ground_m : 0.0; fm = (focus_m >= 0) ? focus_m : 0.0; }
-        double far = (far_m >= 0) ? far_m : cfg.far_distance_m;
-        double mg = (max_ground_m >= 0) ? max_ground_m : cfg.max_ground_m;
-        char mbuf[64];
-        if (gm > 0)      { std::snprintf(mbuf, sizeof(mbuf), "inmem ground H=%.2fm", gm); mode = mbuf; }
-        else if (fm > 0) { std::snprintf(mbuf, sizeof(mbuf), "inmem focus D=%.2fm", fm); mode = mbuf; }
-        else             mode = "inmem pure rotation";
+        if (opt.ground_m < 0 && opt.focus_m < 0) {
+            gm = cfg.ground_height_m;
+            fm = cfg.focus_distance_m;
+        } else {
+            gm = (opt.ground_m >= 0) ? opt.ground_m : 0.0;
+            fm = (opt.focus_m >= 0) ? opt.focus_m : 0.0;
+        }
+        const double far = (opt.far_m >= 0) ? opt.far_m : cfg.far_distance_m;
+        const double mg = (opt.max_ground_m >= 0) ? opt.max_ground_m : cfg.max_ground_m;
 
-        auto tm0 = Clock::now();
-        cv::Mat dirs; double f;
-        buildWorldDirs(W, H, fov, dirs, f);   // 共享只读
+        if (gm > 0) {
+            mode = cv::format("inmem ground H=%.2fm", gm);
+        } else if (fm > 0) {
+            mode = cv::format("inmem focus D=%.2fm", fm);
+        } else {
+            mode = "inmem pure rotation";
+        }
+
+        const auto tm0 = Clock::now();
+        cv::Mat dirs;
+        double cyl_f = 0.0;
+        buildWorldDirs(W, H, fov, dirs, cyl_f); // 共享只读
+        // 内参读取是串行 I/O，放在并行区之外，避免线程里抛异常。
+        for (int i = 0; i < n; ++i) {
+            cams[i].intr = loadIntrinsicsYml(
+                (fs::path(calib_root) / ("camera_" + std::to_string(i)) / "intrinsics.yml")
+                    .string());
+        }
         const double gmm = gm * 1000.0, fmm = fm * 1000.0, frm = far * 1000.0, mmm = mg * 1000.0;
         // 各相机映射互不依赖 → 并行
-        parallel_for(n, threads, [&](int i) {
-            cams[i].intr = loadIntrinsicsYml(calib_root + "/camera_" + std::to_string(i) + "/intrinsics.yml");
-            if (gmm > 0)
-                projectCamera(dirs, W, H, cams[i].intr, cams[i].extr, 0.0, gmm, frm, mmm, cams[i].mapx, cams[i].mapy);
-            else if (fmm > 0)
-                projectCamera(dirs, W, H, cams[i].intr, cams[i].extr, fmm, 0.0, 0.0, 0.0, cams[i].mapx, cams[i].mapy);
-            else
-                projectCamera(dirs, W, H, cams[i].intr, cams[i].extr, 0.0, 0.0, 0.0, 0.0, cams[i].mapx, cams[i].mapy);
+        parallel_for(n, opt.threads, [&](int i) {
+            if (gmm > 0) {
+                projectCamera(dirs, W, H, cams[i].intr, cams[i].extr, 0.0, gmm, frm, mmm,
+                              cams[i].mapx, cams[i].mapy);
+            } else if (fmm > 0) {
+                projectCamera(dirs, W, H, cams[i].intr, cams[i].extr, fmm, 0.0, 0.0, 0.0,
+                              cams[i].mapx, cams[i].mapy);
+            } else {
+                projectCamera(dirs, W, H, cams[i].intr, cams[i].extr, 0.0, 0.0, 0.0, 0.0,
+                              cams[i].mapx, cams[i].mapy);
+            }
         });
-        t_map = ms(tm0, Clock::now());
+        t_map = msSince(tm0);
     } else {
         for (int i = 0; i < n; ++i) {
-            Lut lut = loadLut(calib_root + "/camera_" + std::to_string(i) + "/lut.bin");
-            cams[i].mapx = lut.mapx; cams[i].mapy = lut.mapy;
+            const fs::path lut_dir = fs::path(calib_root) / ("camera_" + std::to_string(i));
+            const Lut lut = loadLut((lut_dir / "lut.bin").string());
+            cams[i].mapx = lut.mapx;
+            cams[i].mapy = lut.mapy;
         }
     }
 
     // ---- 光度 + remap ----
-    auto tw0 = Clock::now();
+    const auto tw0 = Clock::now();
     std::vector<cv::Mat> warps(n), valids(n);
     // 各相机光度+remap 互不依赖 → 并行
-    parallel_for(n, threads, [&](int i) {
-        cv::Mat img; frames[i].convertTo(img, CV_32FC3);
+    parallel_for(n, opt.threads, [&](int i) {
+        cv::Mat img;
+        frames[i].convertTo(img, CV_32FC3);
         if (!cams[i].gain.empty()) {
-            std::vector<cv::Mat> ch; cv::split(img, ch);
-            for (int k = 0; k < 3; ++k) ch[k] *= cams[i].gain.at<float>(k, 0);
+            std::vector<cv::Mat> ch;
+            cv::split(img, ch);
+            for (int k = 0; k < 3; ++k)
+                ch[k] *= cams[i].gain.at<float>(k, 0);
             cv::merge(ch, img);
         }
-        if (!cams[i].vignette.empty()) cv::multiply(img, cams[i].vignette, img);
-        cv::min(img, 255.0, img); cv::max(img, 0.0, img);
+        cv::min(img, 255.0, img);
+        cv::max(img, 0.0, img);
 
         cv::Mat warped;
-        cv::remap(img, warped, cams[i].mapx, cams[i].mapy, cv::INTER_LINEAR,
-                  cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
+        cv::remap(img, warped, cams[i].mapx, cams[i].mapy, cv::INTER_LINEAR, cv::BORDER_CONSTANT,
+                  cv::Scalar(0, 0, 0));
         warps[i] = warped;
-        cv::Mat valid;
-        cv::compare(cams[i].mapx, 0.0f, valid, cv::CMP_GE);   // mapx>=0
-        valids[i] = valid;
+        cv::compare(cams[i].mapx, 0.0f, valids[i], cv::CMP_GE); // mapx >= 0
     });
-    double t_warp = ms(tw0, Clock::now());
+    const double t_warp = msSince(tw0);
 
-    if (dump_warp >= 0 && dump_warp < n) {
-        std::ofstream ofs(dump_path, std::ios::binary);
-        const cv::Mat& wmat = warps[dump_warp];
-        cv::Mat cont = wmat.isContinuous() ? wmat : wmat.clone();
-        ofs.write(reinterpret_cast<const char*>(cont.data),
-                  (std::streamsize)cont.total() * 3 * sizeof(float));
-        std::cerr << "[dump] warp " << dump_warp << " -> " << dump_path << "\n";
+    if (opt.dump_warp >= 0) {
+        dumpFloatMat(warps[opt.dump_warp], opt.dump_warp_path);
+        std::cerr << "[dump] warp " << opt.dump_warp << " -> " << opt.dump_warp_path << "\n";
     }
 
-    // ---- 权重 ----
-    auto tb0 = Clock::now();
+    // ---- 权重 + 融合 ----
+    const auto tz0 = Clock::now();
     std::vector<cv::Mat> weights(n);
-    double t_seam = 0, t_blend = 0;
-    if (seam) {
-        auto ts0 = Clock::now();
+    double t_seam = 0.0;
+    if (opt.seam) {
+        const auto ts0 = Clock::now();
         std::vector<double> angles(n);
-        for (int i = 0; i < n; ++i) angles[i] = cams[i].center_angle;
-        weights = computeSeamWeights(warps, valids, angles, fov, 10.0, 0.6, 1.5, threads);
-        t_seam = ms(ts0, Clock::now());
+        for (int i = 0; i < n; ++i)
+            angles[i] = cams[i].center_angle;
+        weights = computeSeamWeights(warps, valids, angles, fov, 10.0, 0.6, 1.5, opt.threads);
+        t_seam = msSince(ts0);
     } else {
-        for (int i = 0; i < n; ++i) weights[i] = cams[i].weight;
-        t_seam = ms(tb0, Clock::now());
+        for (int i = 0; i < n; ++i)
+            weights[i] = cams[i].weight;
     }
 
-    // ---- 融合 ----
-    auto tz0 = Clock::now();
     cv::Mat pano;
-    if (blend == "multiband") pano = blendMultiband(warps, weights, levels, threads);
-    else pano = featherBlend(warps, weights);
-    t_blend = ms(tz0, Clock::now());
-    double t_stitch = t_warp + t_seam + t_blend;
+    if (opt.blend == "multiband") {
+        pano = blendMultiband(warps, weights, opt.levels, opt.threads);
+    } else {
+        pano = featherBlend(warps, weights);
+    }
+    const double t_blend = msSince(tz0) - t_seam;
+    const double t_stitch = t_warp + t_seam + t_blend;
 
     // ---- 保存 ----
-    if (!dump_pano.empty()) {
-        std::ofstream ofs(dump_pano, std::ios::binary);
-        cv::Mat cont = pano.isContinuous() ? pano : pano.clone();
-        ofs.write(reinterpret_cast<const char*>(cont.data),
-                  (std::streamsize)cont.total() * 3 * sizeof(float));
-        std::cerr << "[dump] pano(float) -> " << dump_pano << "\n";
+    if (!opt.dump_pano_path.empty()) {
+        dumpFloatMat(pano, opt.dump_pano_path);
+        std::cerr << "[dump] pano(float) -> " << opt.dump_pano_path << "\n";
     }
 
     const fs::path out_parent = fs::path(out_path).parent_path();
     if (!out_parent.empty()) {
         std::error_code ec;
         fs::create_directories(out_parent, ec);
+        if (ec) {
+            throw std::runtime_error("cannot create output directory " + out_parent.string() +
+                                     ": " + ec.message());
+        }
     }
 
-    auto tp0 = Clock::now();
-    cv::Mat out8 = truncToU8(pano);   // clip + 向零截断，与 numpy astype(uint8) 一致
-    cv::imwrite(out_path, out8);
-    double t_save = ms(tp0, Clock::now());
+    const auto tp0 = Clock::now();
+    const cv::Mat out8 = truncToU8(pano); // clip + 向零截断，与 numpy astype(uint8) 一致
+    if (!cv::imwrite(out_path, out8)) throw std::runtime_error("cannot write image: " + out_path);
+    const double t_save = msSince(tp0);
 
     // ---- 报告（英文/ASCII，避免 Windows 控制台编码乱码）----
-    std::cout << "blend " << blend << (seam ? "+seam" : "") << " | parallax " << mode
-              << " | threads " << threads << "\n";
+    std::cout << "blend " << opt.blend << (opt.seam ? "+seam" : "") << " | parallax " << mode
+              << " | threads " << opt.threads << "\n";
     std::cout << "---- single-frame time (ms, " << W << "x" << H << ") ----\n";
     std::printf("  load products   %8.1f\n", t_read + t_frames);
     std::printf("  build maps      %8.1f\n", t_map);
@@ -271,4 +472,17 @@ int main(int argc, char** argv) {
     std::printf("  total (incl I/O)%8.1f\n", t_read + t_frames + t_map + t_stitch + t_save);
     std::cout << "saved: " << out_path << "\n";
     return 0;
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    try {
+        return run(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << "[error] " << e.what() << "\n";
+    } catch (...) {
+        std::cerr << "[error] unknown exception\n";
+    }
+    return 1;
 }

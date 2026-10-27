@@ -28,6 +28,7 @@ C++ 版本的**单张高质量合成**程序，功能对齐 Python `tools/stitch
 .
 ├─ CMakeLists.txt                 # 顶层构建入口
 ├─ CMakePresets.json              # release / debug 预设
+├─ .clang-format                  # 统一 C++ 代码风格
 ├─ cmake/CompilerWarnings.cmake   # 统一警告选项
 ├─ config.json                    # 配置（路径相对于本文件所在目录）
 ├─ data/
@@ -59,7 +60,7 @@ C++ 版本的**单张高质量合成**程序，功能对齐 Python `tools/stitch
 │  ├─ npy_io.cpp
 │  ├─ parallax.cpp
 │  └─ blend.cpp
-├─ tests/CMakeLists.txt           # CTest 冒烟测试
+├─ tests/CMakeLists.txt           # CTest 冒烟测试（feather / multiband+seam）
 └─ README.md
 ```
 
@@ -103,13 +104,19 @@ cmake --build --preset release
 ctest --preset release
 ```
 
-`ctest` 会运行 `tests/` 下的冒烟测试（样本数据 + feather 融合），
-输出写到 `build/tests/smoke.jpg`。
+`ctest` 会运行 `tests/` 下的两个冒烟测试（feather 与 multiband+seam），
+输出分别写到 `build/tests/smoke_feather.jpg`、`build/tests/smoke_multiband.jpg`。
+
+代码风格用仓库根目录的 `.clang-format`（clang-format 18+）：
+
+```bash
+clang-format -i src/*.cpp include/panostitch/*.hpp
+```
 
 ## 4. 路径规则
 
-- 默认配置为仓库根目录的 `config.json`：程序会从可执行文件/当前工作目录向上查找，
-  因此从常见工作目录启动都能找到项目内的依赖。
+- 默认配置为仓库根目录的 `config.json`：程序先从可执行文件目录、再从当前工作目录
+  逐级向上查找，因此从常见工作目录或任意构建目录启动都能找到项目内的依赖。
 - `config.json` 里的 `paths.calib_root`、`paths.frames_root`、`paths.out_root`
   均为**相对于 config.json 所在目录**的路径；写成绝对路径则原样使用。
 - 显式传入的 `--config`、`--frames`、`--out` 按**当前工作目录**解析。
@@ -120,7 +127,7 @@ ctest --preset release
 以下以 `build/src/panostitch` 为例（Windows 下为 `build\src\panostitch.exe`）：
 
 ```bash
-# 默认：读 data/calib 的 LUT，多频段 + 找缝，输出 output/cpp_pano.jpg
+# 常用：读 data/calib 的 LUT，多频段 + 找缝，输出 output/cpp_pano.jpg
 ./build/src/panostitch --blend multiband --seam
 
 # 视差扫参（内存构造映射，不改 lut.bin）
@@ -147,6 +154,7 @@ ctest --preset release
 | `--threads N` | 1 | 线程数；`0`=取硬件线程数 |
 | `--out PATH` | `output/cpp_pano.jpg` | 输出图 |
 | `--config PATH` | `config.json` | 配置 |
+| `-h`, `--help` | — | 打印参数说明 |
 
 调试用（可删）：`--dump-warp i file.bin`（导出第 i 路 remap 结果，float32）、
 `--dump-pano file.bin`（导出融合后的 float 全景）。

@@ -31,10 +31,6 @@ target_link_libraries(panostitch PRIVATE panostitch::core)
 
 panostitch_enable_warnings(panostitch)
 
-if(WIN32)
-  target_link_libraries(panostitch PRIVATE ws2_32)
-endif()
-
 if(MINGW AND PANOSTITCH_STATIC_RUNTIME)
   target_link_options(panostitch PRIVATE -static -static-libgcc -static-libstdc++)
 endif()

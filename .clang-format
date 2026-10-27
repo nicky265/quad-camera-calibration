@@ -1,0 +1,22 @@
+# 统一的 C++ 风格（clang-format 18+）
+BasedOnStyle: LLVM
+Standard: c++17
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+BreakBeforeBraces: Attach
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: false
+PointerAlignment: Left
+ReferenceAlignment: Left
+DerivePointerAlignment: false
+ReflowComments: false
+SortIncludes: CaseSensitive
+IncludeBlocks: Preserve
+SpaceBeforeParens: ControlStatements
+Cpp11BracedListStyle: true
+AlignAfterOpenBracket: Align
+BinPackArguments: true
+BinPackParameters: true
